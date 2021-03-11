@@ -1,6 +1,7 @@
 #-------------------------Import-------------------------------------
 import pandas as pd
 from scipy import linalg
+pd.options.mode.chained_assignment = None  # default='warn'
 
 #----------------------------Class-----------------------------------
 class Prismal:
@@ -13,15 +14,16 @@ class Prismal:
     """
 
     # Initializer / Instance attributes
-    def __init__(self, name, a, d_in, d_elec, d_alu_prod, elec_int_pb, elec_int_in, electricity_tech, impacts, impact_list, regions, year, production):
-        """Initialie all data needed for PAPI
+    def __init__(self, name, a, d_in, d_elec_ssp,d_elec_al, d_alu_prod, elec_int_pb, elec_int_in, electricity_tech, impacts, impact_list, regions, year,production):
+        """Initialie all data needed for PRISMAL
 
          Args:
         -----
             name: [string] the name of the scenario
             a: [df] Technological matrix of aluminium production
-            D_in:
-            D_elec: [df] Market share of electricity technology
+            D_in: [df] Market share of inert anode technology
+            d_elec_ssp: [df] Market share of electricity technology according SSP
+            d_elec_al: [df] Market share of electricity technology for aluminium smelter
             D_alu_prod: [df] Marketshare of aluminum producer per region
             Elec_int_pb: [df] Electricity consumption of electrolysis (prebaked anode) process per year
             Elec_int_in: [df] Electricity consumption of electrolysis (inert anode) process per year
@@ -37,7 +39,8 @@ class Prismal:
         self.name = name
         self.a = a
         self.d_in = d_in
-        self.d_elec = d_elec
+        self.d_elec_ssp = d_elec_ssp
+        self.d_elec_al = d_elec_al
         self.d_alu_prod = d_alu_prod
         self.elec_int_pb = elec_int_pb
         self.elec_int_in = elec_int_in
@@ -75,43 +78,45 @@ class Prismal:
 
         Args:
         -----
-            template_name: [string] the name of the escel file to read (Papi_data.xlsx)
+            template_name: [string] the name of the excel file to read (PRISMAL_data.xlsx)
             scenario_name: [string] the name of the PRISMAL scenario
             mitigation = [string] the name of the mitigation scenario selected
 
         Returns:
         --------
-            scenario_object: [???] ???
+            scenario_object<>
         """
 
         # read excel
-        a = pd.read_excel(template_name, sheet_name='a')
+        a = pd.read_excel(template_name, index_col=[0], sheet_name='a')
         d_in = pd.read_excel(template_name, index_col=[0, 1], sheet_name='d_in')
-        d_elec = pd.read_excel(template_name, index_col=[0, 1, 2, 3], sheet_name='d_elec')
+        d_elec_ssp = pd.read_excel(template_name, index_col=[0, 1, 2, 3], sheet_name='d_elec_ssp')
+        d_elec_al = pd.read_excel(template_name, index_col=[0, 1, 2, 3], sheet_name='d_elec_al')
         d_alu_prod = pd.read_excel(template_name, index_col=[0, 1], sheet_name=prod_geo)
         elec_int_in = pd.read_excel(template_name, index_col=[0, 1], sheet_name='elec_int_in')
         elec_int_pb = pd.read_excel(template_name, index_col=[0, 1], sheet_name='elec_int_pb')
-        impacts = pd.read_excel(template_name, sheet_name='impacts')
+        impacts = pd.read_excel(template_name, index_col=[0], sheet_name='impacts')
         production = pd.read_excel(template_name, index_col=[0], sheet_name='prod')
 
         #lists used to build index
         impact_list = list(impacts.index)
-        year = list(d_elec.columns)
-        electricity_tech = list(d_elec.index.get_level_values(3).unique())
-        regions = list(d_elec.index.get_level_values(2).unique())
+        year = list(d_elec_ssp.columns)
+        electricity_tech = list(d_elec_ssp.index.get_level_values(3).unique())
+        regions = list(d_elec_ssp.index.get_level_values(2).unique())
         regions.append('GLO')
 
         # Selection of scenario
         d_in = d_in.loc[scenario_name]
         d_in.columns = year
-        d_elec = d_elec.loc[scenario_name].loc[mitigation]
+        d_elec_ssp = d_elec_ssp.loc[scenario_name].loc[mitigation]
+        d_elec_al = d_elec_al.loc[scenario_name].loc[mitigation]
         d_alu_prod = d_alu_prod.loc[scenario_name]
         elec_int_in = elec_int_in.loc[scenario_name]
         elec_int_pb = elec_int_pb.loc[scenario_name]
         production = production.loc[scenario_name]
 
         # create object
-        scenario_object = cls(scenario_name, a, d_in, d_elec, d_alu_prod, elec_int_in, elec_int_pb,
+        scenario_object = cls(scenario_name, a, d_in,  d_elec_ssp, d_elec_al, d_alu_prod, elec_int_in, elec_int_pb,
                               electricity_tech, impacts, impact_list, regions, year, production)
         return scenario_object
 
@@ -119,6 +124,7 @@ class Prismal:
         """Solve all methods
 
         """
+        self._calc_d_elec_al()
         self._calc_l()
         self._calc_i_baux()
         self._calc_i_oalu()
@@ -140,6 +146,7 @@ class Prismal:
         """Solve all methods
 
         """
+        self._calc_d_elec_al()
         self._calc_l()
         self._calc_i_baux()
         self._calc_i_oalu()
@@ -156,6 +163,46 @@ class Prismal:
         self._calc_i_al_prod()
         self._calc_i_improvments()
 
+    def _calc_d_elec_al(self):
+        """ Calculate future mix electric of aluminium smelter based on SSP electricity mix trends
+
+        Args:
+        -----
+
+        Returns:
+        --------
+            self.d_elec_al: [df]
+        """
+
+
+        for r in self.regions[0:5]:
+
+
+
+            d_plus = self.d_elec_ssp.loc[r].diff(axis=1).fillna(0)
+            d_plus[d_plus < 0] = 0
+            d_minus = self.d_elec_ssp.loc[r].diff(axis=1).fillna(0)
+            d_minus[d_minus > 0] = 0
+            delta_minus = self.d_elec_ssp.loc[r].pct_change(axis=1).fillna(0)
+            delta_minus[delta_minus > 0] = 0
+            delta_plus = d_plus / d_plus.sum(axis=0)
+            delta_plus = delta_plus.fillna(0)
+
+            d_elec_al_minus = pd.DataFrame(index=self.d_elec_al.index, columns=self.d_elec_al.columns)
+            d_elec_al_plus = pd.DataFrame(index=self.d_elec_al.index, columns=self.d_elec_al.columns)
+
+            for y in self.year:
+                if y == 2020:
+                    y_0 = y
+                elif y == 2010:
+                    y_0 = y
+                elif y == 2005:
+                    y_0 = y
+                else:
+                    d_elec_al_minus[y].loc[r] = self.d_elec_al[y_0].loc[r].values * delta_minus[y].values
+                    d_elec_al_plus[y].loc[r] = -d_elec_al_minus[y].loc[r].sum() * delta_plus[y].values
+                    self.d_elec_al[y].loc[r] = self.d_elec_al[y_0].loc[r].values + d_elec_al_minus[y].loc[r].values + d_elec_al_plus[y].loc[r].values
+                    y_0 = y
 
     def _calc_l(self):
         """ Calculate inverse of the A matrix
@@ -228,9 +275,9 @@ class Prismal:
 
         imp_elec_diag = pd.DataFrame(linalg.block_diag(*[imp_elec] * len(self.regions[0:5])),
                                      index=pd.MultiIndex.from_product([self.regions[0:5], imp_elec.index]),
-                                     columns=self.d_elec.index)
+                                     columns=self.d_elec_al.index)
 
-        self.i_elec_kWh = imp_elec_diag @ self.d_elec
+        self.i_elec_kWh = imp_elec_diag @ self.d_elec_al
 
     def _calc_i_elec_smelting(self):
         """ Calculate the impact of electricity for the smelting process
@@ -462,7 +509,7 @@ class Prismal:
 
     def _calc_i_improvments(self):
         """ Calculation fo the contribution of each improvments
-        1) Changes in electricity ix
+        1) Changes in electricity mix
         2) Energy intensity improvments
         3) Inert anode deployment
 
@@ -477,21 +524,21 @@ class Prismal:
 
         # Energy intensity improvments
 
-        elec_int = self.elec_int_in.mul(self.d_in, axis=0, level=0) + self.elec_int_pb.mul(
-            1 - self.d_in, axis=0, level=0)
+        first_year = self.year[2]
+
+        elec_int = self.elec_int_in.mul(self.d_in, axis=0, level=0) + self.elec_int_pb.mul(1 - self.d_in, axis=0, level=0)
         elec_int_g = self.elec_int_in.mul(self.d_in, axis=0, level=0).mul(self.d_alu_prod, axis=0, level=0,
                                                                                   fill_value=0).sum(
             axis=0) + self.elec_int_pb.mul(1 - self.d_in, axis=0, level=0).mul(self.d_alu_prod, axis=0,
-                                                                                       level=0, fill_value=0).sum(
-            axis=0)
+                                                                                       level=0, fill_value=0).sum(axis=0)
 
-        delta_int = -elec_int.sub(elec_int.iloc(axis=1)[0], axis=0)
-        delta_int_g = -elec_int_g.sub(elec_int_g.iloc[0])
+        delta_int = -elec_int.sub(elec_int.iloc(axis=1)[2], axis=0)
+        delta_int_g = -elec_int_g.sub(elec_int_g.iloc[2])
         delta_int_g = pd.DataFrame(delta_int_g).T
         delta_int_g.index = ['GLO']
 
-        i_elec = self.i_elec_kWh.loc(axis=1)[2005]
-        i_elec_g = i_elec.mul(self.d_alu_prod[2005], axis=0, level=0).groupby(level=1).sum()
+        i_elec = self.i_elec_kWh.loc(axis=1)[first_year]
+        i_elec_g = i_elec.mul(self.d_alu_prod[first_year], axis=0, level=0).groupby(level=1).sum()
         i_elec_g = pd.concat([i_elec_g], keys=['GLO'])
 
         imp_ei = delta_int.mul(i_elec, axis=0, level=0)
@@ -502,10 +549,10 @@ class Prismal:
         imp_ei.index.names = ['Improvments', 'Regions', 'Impacts']
 
         # Changes in Electricity mix
-        delta_i_elec = -self.i_elec_kWh.sub(self.i_elec_kWh[2005], axis=0)
+        delta_i_elec = -self.i_elec_kWh.sub(self.i_elec_kWh[first_year], axis=0)
         i_elec_kwh_g = self.i_elec_kWh.mul(self.d_alu_prod, axis=0, level=0, fill_value=0).groupby(
             level=1).sum()
-        delta_i_elec_g = -i_elec_kwh_g.sub(i_elec_kwh_g[2005], axis=0)
+        delta_i_elec_g = -i_elec_kwh_g.sub(i_elec_kwh_g[first_year], axis=0)
         delta_i_elec_g = pd.concat([delta_i_elec_g], keys=['GLO'])
 
         imp_em = delta_i_elec.mul(elec_int, axis=0, level=0)
